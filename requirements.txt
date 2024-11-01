@@ -1,0 +1,30 @@
+# GUI Dependencies
+PyQt5==5.15.9
+PyQt5-Qt5==5.15.2
+PyQt5-sip==12.12.2
+
+# File Operations & Processing
+python-magic-bin==0.4.14    # File type detection
+Pillow==10.0.0             # Image processing
+pytesseract==0.3.10        # OCR
+PyPDF2==3.0.1              # PDF processing
+python-docx==0.8.11        # Word document processing
+textract==1.6.5            # Document text extraction
+watchdog==3.0.0            # File system monitoring
+
+# Data Management
+pandas==2.0.3              # Data manipulation
+numpy==1.24.3              # Numerical operations
+
+# Utilities
+python-dateutil==2.8.2     # Date handling
+typing-extensions==4.7.1   # Type hinting
+tqdm==4.65.0              # Progress bars
+pathlib==1.0.1            # Path manipulation
+six==1.16.0               # Python 2/3 compatibility
+
+# Development Tools
+black==23.7.0             # Code formatting
+pylint==2.17.5            # Code linting
+pytest==7.4.0             # Testing
+
