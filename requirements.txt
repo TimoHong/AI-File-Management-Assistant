@@ -1,0 +1,22 @@
+# Core GUI
+PyQt5>=5.15.0
+
+# AI and Machine Learning
+transformers>=4.30.0
+torch>=2.0.0
+sentence-transformers>=2.2.2
+scikit-learn>=1.0.2
+Pillow>=9.0.0
+
+# File Processing
+python-magic>=0.4.24
+PyPDF2>=3.0.0
+python-docx>=0.8.11
+
+# Data Processing
+pandas>=1.5.0
+numpy>=1.21.0
+# Utilities
+logging>=0.5.1.2
+os-sys>=2.1.4
+typing>=3.7.4.3
