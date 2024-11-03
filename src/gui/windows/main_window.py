@@ -1,14 +1,15 @@
-# src/gui/windows/main_window.py
-
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                             QPushButton, QLabel, QFileDialog, QTreeView, 
                             QListView, QStatusBar, QToolBar, QStyle, QSplitter,
-                            QLineEdit, QProgressBar, QFrame, QMessageBox)
+                            QLineEdit, QProgressBar, QFrame, QMessageBox,
+                            QButtonGroup, QRadioButton)
 from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon, QStandardItemModel, QStandardItem
 from src.core.classifier.image_classifier import ImageClassifier
+from src.core.classifier.document_classifier import DocumentClassifier
 import os
 import shutil
+import logging
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -17,7 +18,18 @@ class MainWindow(QMainWindow):
         self.files_to_process = []
         self.current_progress = 0
         self.classifier = None
-        self.setup_classifier()
+        self.doc_classifier = None
+        self.setup_classifiers()
+
+    def setup_classifiers(self):
+        """Initialize the classifiers"""
+        try:
+            self.classifier = ImageClassifier()
+            self.doc_classifier = DocumentClassifier()
+            self.status_bar.showMessage('AI models loaded successfully')
+        except Exception as e:
+            self.status_bar.showMessage(f'Error loading AI models: {str(e)}')
+            logging.error(f"Error loading classifiers: {str(e)}")
 
     def init_ui(self):
         # Set window properties
@@ -64,6 +76,9 @@ class MainWindow(QMainWindow):
                 background-color: #0078D4;
                 border-radius: 2px;
             }
+            QRadioButton {
+                padding: 5px;
+            }
         """)
 
         # Create central widget and main layout
@@ -74,6 +89,23 @@ class MainWindow(QMainWindow):
 
         # Create toolbar
         self.create_toolbar()
+
+        # Create mode selection
+        mode_layout = QHBoxLayout()
+        self.mode_group = QButtonGroup()
+        
+        self.image_mode = QRadioButton("Image Mode")
+        self.doc_mode = QRadioButton("Document Mode")
+        self.image_mode.setChecked(True)
+        
+        self.mode_group.addButton(self.image_mode)
+        self.mode_group.addButton(self.doc_mode)
+        
+        mode_layout.addWidget(self.image_mode)
+        mode_layout.addWidget(self.doc_mode)
+        mode_layout.addStretch()
+        
+        main_layout.addLayout(mode_layout)
 
         # Create splitter for tree and list views
         splitter = QSplitter(Qt.Horizontal)
@@ -161,6 +193,7 @@ class MainWindow(QMainWindow):
         self.organize_button.clicked.connect(self.organize_files)
         self.clear_button.clicked.connect(self.clear_files)
         self.tree_view.clicked.connect(self.folder_selected)
+        self.image_mode.toggled.connect(self.mode_changed)
 
     def create_toolbar(self):
         toolbar = QToolBar()
@@ -171,16 +204,13 @@ class MainWindow(QMainWindow):
         refresh_action = toolbar.addAction('Refresh')
         refresh_action.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
 
-    def setup_classifier(self):
-        """Initialize the image classifier"""
-        try:
-            print("Initializing ImageClassifier...")  # Debug print
-            self.classifier = ImageClassifier()
-            print("ImageClassifier initialized successfully")  # Debug print
-            self.status_bar.showMessage('AI model loaded successfully')
-        except Exception as e:
-            print(f"Error initializing classifier: {str(e)}")  # Debug print
-            self.status_bar.showMessage(f'Error loading AI model: {str(e)}')
+    def mode_changed(self):
+        """Handle mode change between image and document"""
+        if self.image_mode.isChecked():
+            self.status_bar.showMessage('Switched to Image Mode')
+        else:
+            self.status_bar.showMessage('Switched to Document Mode')
+        self.clear_files()
 
     def populate_tree(self):
         # Add some dummy items for now
@@ -195,11 +225,16 @@ class MainWindow(QMainWindow):
 
     def add_files(self):
         """Add files using file dialog"""
+        if self.image_mode.isChecked():
+            file_filter = "Image Files (*.png *.jpg *.jpeg *.gif *.bmp);;All Files (*.*)"
+        else:
+            file_filter = "PDF Documents (*.pdf);;All Files (*.*)"
+
         files, _ = QFileDialog.getOpenFileNames(
             self,
-            "Select Images",
+            "Select Files",
             "",
-            "Image Files (*.png *.jpg *.jpeg *.gif *.bmp);;All Files (*.*)"
+            file_filter
         )
         
         if files:
@@ -237,23 +272,27 @@ class MainWindow(QMainWindow):
         """Finish file processing"""
         self.add_button.setEnabled(True)
         self.organize_button.setEnabled(True)
-        self.operation_label.setText('Processing complete - Click Organize to group images')
+        self.operation_label.setText('Processing complete - Click Organize to group files')
         self.status_bar.showMessage(f'Added {len(self.files_to_process)} files')
         
         # Hide progress bar after a delay
         QTimer.singleShot(2000, lambda: self.progress_bar.setVisible(False))
 
     def organize_files(self):
-        """Organize files using AI classification"""
-        print("\n=== Starting Image Organization ===")
-        
+        """Organize files based on selected mode"""
+        if self.image_mode.isChecked():
+            self.organize_images()
+        else:
+            self.organize_documents()
+
+    def organize_images(self):
+        """Organize images using AI classification"""
         if self.file_model.rowCount() == 0:
             QMessageBox.warning(self, "No Files", "Please add some images first.")
             return
 
         if not self.classifier:
-            print("Initializing classifier")
-            self.setup_classifier()
+            self.setup_classifiers()
             if not self.classifier:
                 QMessageBox.critical(self, "Error", "Could not initialize AI model.")
                 return
@@ -271,15 +310,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "No Images", "No valid image files found.")
                 return
 
-            # Get the source directory from the first image
-            source_dir = os.path.dirname(image_paths[0])
-            print(f"\nSource directory: {source_dir}")
-
-            # Create the output directory
-            organized_dir = os.path.join(source_dir, 'AI_Organized_Images')
-            print(f"Creating output directory: {organized_dir}")
-            os.makedirs(organized_dir, exist_ok=True)
-
             # Show progress
             self.progress_bar.setVisible(True)
             self.progress_bar.setMaximum(len(image_paths))
@@ -289,23 +319,17 @@ class MainWindow(QMainWindow):
             self.organize_button.setEnabled(False)
 
             # Analyze images
-            print("\nAnalyzing images...")
-            results = []
-            for idx, path in enumerate(image_paths):
-                print(f"Processing image {idx + 1}/{len(image_paths)}: {os.path.basename(path)}")
-                self.operation_label.setText(f'Analyzing image {idx + 1} of {len(image_paths)}...')
-                result = self.classifier.analyze_images([path])[0]
-                results.append(result)
-                self.progress_bar.setValue(idx + 1)
-                print(f"Caption generated: {result['caption']}")
-
+            results = self.classifier.analyze_images(image_paths)
+            
             # Group images
-            print("\nGrouping images...")
-            self.operation_label.setText('Grouping similar images...')
             grouped_images = self.classifier.group_images(results, num_groups=3)
 
-            # Create organized folders and move files
             if grouped_images:
+                # Create organized folders and move files
+                base_dir = os.path.dirname(image_paths[0])
+                organized_dir = os.path.join(base_dir, 'AI_Organized_Images')
+                os.makedirs(organized_dir, exist_ok=True)
+
                 for group_id, files in grouped_images.items():
                     # Get a representative caption for the group
                     group_images = [r for r in results if r['path'] in files]
@@ -314,16 +338,12 @@ class MainWindow(QMainWindow):
                     
                     # Create group directory
                     group_dir = os.path.join(organized_dir, group_name)
-                    print(f"\nCreating group directory: {group_dir}")
                     os.makedirs(group_dir, exist_ok=True)
 
                     # Copy files to group directory
                     for file_path in files:
                         new_path = os.path.join(group_dir, os.path.basename(file_path))
-                        print(f"Copying {os.path.basename(file_path)} to {group_name}")
                         shutil.copy2(file_path, new_path)
-
-                print(f"\nOrganization complete! Files organized in: {organized_dir}")
 
                 # Show success message with details
                 msg = (f"Successfully organized {len(image_paths)} images into {len(grouped_images)} groups.\n\n"
@@ -334,15 +354,16 @@ class MainWindow(QMainWindow):
                                            QMessageBox.Yes | QMessageBox.No)
                 
                 if reply == QMessageBox.Yes:
-                    # Open the folder in file explorer
                     if os.name == 'nt':  # Windows
                         os.startfile(organized_dir)
                     else:  # macOS or Linux
                         import subprocess
                         subprocess.call(['open', organized_dir])
 
+                # Clear the file list
+                self.clear_files()
+
             else:
-                print("Error: Could not group the images")
                 QMessageBox.warning(self, "Error", "Could not group the images.")
 
         except Exception as e:
@@ -352,7 +373,94 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error", f"Error organizing files: {str(e)}")
 
         finally:
-            # Reset UI state
+            self.progress_bar.setVisible(False)
+            self.add_button.setEnabled(True)
+            self.organize_button.setEnabled(True)
+            self.operation_label.setText('')
+
+    def organize_documents(self):
+        """Organize documents using AI classification"""
+        if self.file_model.rowCount() == 0:
+            QMessageBox.warning(self, "No Files", "Please add some documents first.")
+            return
+
+        try:
+            # Initialize document classifier if needed
+            if not self.doc_classifier:
+                self.setup_classifiers()
+                if not self.doc_classifier:
+                    QMessageBox.critical(self, "Error", "Could not initialize document classifier.")
+                    return
+
+            # Collect all document paths from the model
+            doc_paths = []
+            for row in range(self.file_model.rowCount()):
+                file_path = self.file_model.item(row).text()
+                if file_path.lower().endswith('.pdf'):
+                    doc_paths.append(file_path)
+                    print(f"Found document: {file_path}")
+
+            if not doc_paths:
+                QMessageBox.warning(self, "No Documents", "No valid PDF documents found.")
+                return
+
+            # Show progress
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setMaximum(len(doc_paths))
+            self.progress_bar.setValue(0)
+            self.operation_label.setText('Analyzing documents with AI...')
+            self.add_button.setEnabled(False)
+            self.organize_button.setEnabled(False)
+
+            # Analyze documents
+            results = self.doc_classifier.analyze_documents(doc_paths)
+            
+            # Group documents
+            grouped_docs = self.doc_classifier.group_documents(results)
+
+            if grouped_docs:
+                # Create output directory
+                base_dir = os.path.dirname(doc_paths[0])
+                organized_dir = os.path.join(base_dir, 'AI_Organized_Documents')
+                os.makedirs(organized_dir, exist_ok=True)
+
+                # Move documents to their respective groups
+                for category, files in grouped_docs.items():
+                    category_dir = os.path.join(organized_dir, category)
+                    os.makedirs(category_dir, exist_ok=True)
+
+                    for file_path in files:
+                        new_path = os.path.join(category_dir, os.path.basename(file_path))
+                        shutil.copy2(file_path, new_path)
+
+                # Show success message
+                msg = (f"Successfully organized {len(doc_paths)} documents into {len(grouped_docs)} categories.\n\n"
+                      f"Location: {organized_dir}\n\n"
+                      "Would you like to open the folder?")
+                
+                reply = QMessageBox.question(self, 'Organization Complete', msg,
+                                           QMessageBox.Yes | QMessageBox.No)
+                
+                if reply == QMessageBox.Yes:
+                    if os.name == 'nt':  # Windows
+                        os.startfile(organized_dir)
+                    else:  # macOS or Linux
+                        import subprocess
+                        subprocess.call(['open', organized_dir])
+
+                # Clear the file list
+                self.clear_files()
+
+            else:
+                QMessageBox.warning(self, "Error", "Could not group the documents.")
+
+        except Exception as e:
+            import traceback
+            print(f"\nError occurred: {str(e)}")
+            print(traceback.format_exc())
+            QMessageBox.critical(self, "Error", f"Error organizing documents: {str(e)}")
+
+        finally:
             self.progress_bar.setVisible(False)
             self.add_button.setEnabled(True)
             self.organize_button.setEnabled(True)
