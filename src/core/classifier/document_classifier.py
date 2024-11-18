@@ -165,7 +165,8 @@ class DocumentClassifier:
         return results
 
     def group_documents(self, analysis_results: List[Dict[str, Any]], 
-                       confidence_threshold: float = 0.5) -> Dict[str, List[str]]:
+                       confidence_threshold: float = 0.5,
+                       num_groups: int = None) -> Dict[str, List[str]]:
         """Group documents based on their hierarchical classifications"""
         try:
             grouped_docs = {}
@@ -177,12 +178,33 @@ class DocumentClassifier:
                                     key=lambda i: result['confidence'][i])
                     
                     if result['confidence'][max_conf_idx] >= confidence_threshold:
+                        # If num_groups is specified, only use that many levels of categorization
+                        if num_groups is not None:
+                            max_conf_idx = min(num_groups - 1, max_conf_idx)
+                        
                         category_path = ' → '.join(result['categories'][:max_conf_idx + 1])
                         
                         if category_path not in grouped_docs:
                             grouped_docs[category_path] = []
                             
                         grouped_docs[category_path].append(result['path'])
+            
+            # If num_groups is specified and we have more groups than requested,
+            # merge the smallest groups
+            if num_groups is not None and len(grouped_docs) > num_groups:
+                sorted_groups = sorted(grouped_docs.items(), 
+                                     key=lambda x: len(x[1]))
+                while len(grouped_docs) > num_groups:
+                    smallest_key, smallest_files = sorted_groups.pop(0)
+                    second_smallest_key = sorted_groups[0][0]
+                    
+                    # Merge smallest into second smallest
+                    grouped_docs[second_smallest_key].extend(smallest_files)
+                    del grouped_docs[smallest_key]
+                    
+                    # Resort the list
+                    sorted_groups = sorted(grouped_docs.items(), 
+                                         key=lambda x: len(x[1]))
             
             return grouped_docs
             
