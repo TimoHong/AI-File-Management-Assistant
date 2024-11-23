@@ -1,3 +1,18 @@
+import os
+import sys
+from concurrent.futures import ThreadPoolExecutor
+
+# Add the project root directory to Python path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# Use relative imports
+from src.core.classifier.image_classifier import ImageClassifier
+from src.core.classifier.document_classifier import DocumentClassifier
+
+
 from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                             QPushButton, QLabel, QFileDialog, QTreeView, 
                             QListView, QStatusBar, QToolBar, QStyle, QSplitter,
@@ -5,13 +20,6 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                             QButtonGroup, QRadioButton, QSlider)
 from PyQt5.QtCore import Qt, QSize, QTimer, pyqtSignal, QObject
 from PyQt5.QtGui import QIcon, QStandardItemModel, QStandardItem
-from src.core.classifier.image_classifier import ImageClassifier
-from src.core.classifier.document_classifier import DocumentClassifier
-import os
-import shutil
-import logging
-from concurrent.futures import ThreadPoolExecutor
-import threading
 
 class WorkerSignals(QObject):
     progress = pyqtSignal(int)
@@ -109,13 +117,25 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
 
         # Create toolbar
         self.create_toolbar()
 
-        # Create mode selection
-        mode_layout = QHBoxLayout()
+        # Mode selection with better spacing and alignment
+        mode_frame = QFrame()
+        mode_frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border-radius: 8px;
+                padding: 15px;
+            }
+        """)
+        mode_layout = QHBoxLayout(mode_frame)
+        
+        # Mode selection group
+        mode_group_layout = QHBoxLayout()
         self.mode_group = QButtonGroup()
         
         self.image_mode = QRadioButton("Image Mode")
@@ -125,10 +145,12 @@ class MainWindow(QMainWindow):
         self.mode_group.addButton(self.image_mode)
         self.mode_group.addButton(self.doc_mode)
         
-        mode_layout.addWidget(self.image_mode)
-        mode_layout.addWidget(self.doc_mode)
+        mode_group_layout.addWidget(self.image_mode)
+        mode_group_layout.addWidget(self.doc_mode)
+        mode_layout.addLayout(mode_group_layout)
         
-        # Add grouping settings
+        # Slider group with better spacing
+        slider_layout = QHBoxLayout()
         self.groups_label = QLabel("Number of Groups:")
         self.groups_slider = QSlider(Qt.Horizontal)
         self.groups_slider.setMinimum(2)
@@ -137,91 +159,128 @@ class MainWindow(QMainWindow):
         self.groups_slider.setTickPosition(QSlider.TicksBelow)
         self.groups_slider.setTickInterval(1)
         self.groups_value_label = QLabel("3")
-        self.groups_slider.valueChanged.connect(self.update_groups_value)
         
-        mode_layout.addWidget(self.groups_label)
-        mode_layout.addWidget(self.groups_slider)
-        mode_layout.addWidget(self.groups_value_label)
+        slider_layout.addWidget(self.groups_label)
+        slider_layout.addWidget(self.groups_slider)
+        slider_layout.addWidget(self.groups_value_label)
+        mode_layout.addLayout(slider_layout)
         mode_layout.addStretch()
         
-        main_layout.addLayout(mode_layout)
-        # Create splitter for tree and list views
-        splitter = QSplitter(Qt.Horizontal)
-        
-        # Left side - Directory Tree
-        self.tree_view = QTreeView()
-        self.tree_view.setHeaderHidden(True)
-        self.tree_model = QStandardItemModel()
-        self.tree_model.setHorizontalHeaderLabels(['Folders'])
-        self.tree_view.setModel(self.tree_model)
-        self.populate_tree()
-        splitter.addWidget(self.tree_view)
+        main_layout.addWidget(mode_frame)
 
-        # Right side - File List and Controls
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
+        # Main content area
+        content_frame = QFrame()
+        content_frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border-radius: 8px;
+                padding: 15px;
+            }
+        """)
+        content_layout = QVBoxLayout(content_frame)
         
-        # Search bar
+        # Search bar with icon
         search_layout = QHBoxLayout()
         self.search_bar = QLineEdit()
         self.search_bar.setPlaceholderText("Search files...")
         self.search_bar.setStyleSheet("""
             QLineEdit {
-                padding: 5px;
+                padding: 8px;
+                padding-left: 15px;
                 border: 1px solid #CCCCCC;
-                border-radius: 4px;
+                border-radius: 20px;
+                font-size: 14px;
             }
         """)
         search_layout.addWidget(self.search_bar)
-        right_layout.addLayout(search_layout)
+        content_layout.addLayout(search_layout)
 
         # File list
         self.file_list = QListView()
+        self.file_list.setStyleSheet("""
+            QListView {
+                border: 1px solid #CCCCCC;
+                border-radius: 8px;
+                padding: 5px;
+                background-color: #FFFFFF;
+            }
+            QListView::item {
+                padding: 8px;
+                border-bottom: 1px solid #EEEEEE;
+            }
+            QListView::item:selected {
+                background-color: #E3F2FD;
+                color: #0078D4;
+            }
+        """)
         self.file_model = QStandardItemModel()
         self.file_list.setModel(self.file_model)
-        right_layout.addWidget(self.file_list)
+        content_layout.addWidget(self.file_list)
 
-        # Status and Progress Section
+        # Status frame
         status_frame = QFrame()
-        status_frame.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
+        status_frame.setStyleSheet("""
+            QFrame {
+                background-color: #F8F9FA;
+                border-radius: 8px;
+                padding: 10px;
+            }
+        """)
         status_layout = QVBoxLayout(status_frame)
         
-        # File Counter
         self.file_counter_label = QLabel('Files: 0')
+        self.file_counter_label.setStyleSheet("font-weight: bold;")
         status_layout.addWidget(self.file_counter_label)
         
-        # Progress Bar
         self.progress_bar = QProgressBar()
-        self.progress_bar.setMaximum(100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat('%p% - %v/%m files')
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: none;
+                border-radius: 10px;
+                text-align: center;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #0078D4;
+                border-radius: 10px;
+            }
+        """)
         self.progress_bar.setVisible(False)
         status_layout.addWidget(self.progress_bar)
         
-        # Current Operation Label
         self.operation_label = QLabel('')
         status_layout.addWidget(self.operation_label)
         
-        right_layout.addWidget(status_frame)
+        content_layout.addWidget(status_frame)
 
-        # Control buttons
+        # Button layout with modern styling
         button_layout = QHBoxLayout()
         self.add_button = QPushButton('Add Files')
         self.organize_button = QPushButton('Organize')
         self.clear_button = QPushButton('Clear')
+        
+        for btn in [self.add_button, self.organize_button, self.clear_button]:
+            btn.setMinimumHeight(40)
+            btn.setCursor(Qt.PointingHandCursor)
+        
+        self.organize_button.setStyleSheet("""
+            QPushButton {
+                background-color: #28A745;
+            }
+            QPushButton:hover {
+                background-color: #218838;
+            }
+        """)
         
         button_layout.addWidget(self.add_button)
         button_layout.addWidget(self.organize_button)
         button_layout.addWidget(self.clear_button)
         button_layout.addStretch()
         
-        right_layout.addLayout(button_layout)
-        splitter.addWidget(right_widget)
+        content_layout.addLayout(button_layout)
+        main_layout.addWidget(content_frame)
 
-        # Add splitter to main layout
-        main_layout.addWidget(splitter)
-
-        # Create status bar
+        # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage('Ready')
@@ -230,7 +289,6 @@ class MainWindow(QMainWindow):
         self.add_button.clicked.connect(self.add_files)
         self.organize_button.clicked.connect(self.organize_files)
         self.clear_button.clicked.connect(self.clear_files)
-        self.tree_view.clicked.connect(self.folder_selected)
         self.image_mode.toggled.connect(self.mode_changed)
         self.search_bar.textChanged.connect(self.filter_files)
 
