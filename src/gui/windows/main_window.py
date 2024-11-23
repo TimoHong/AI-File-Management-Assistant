@@ -1,6 +1,10 @@
 import os
 import sys
+import shutil
+import logging
 from concurrent.futures import ThreadPoolExecutor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtWidgets import QMessageBox
 
 # Add the project root directory to Python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -18,7 +22,7 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                             QListView, QStatusBar, QToolBar, QStyle, QSplitter,
                             QLineEdit, QProgressBar, QFrame, QMessageBox,
                             QButtonGroup, QRadioButton, QSlider)
-from PyQt5.QtCore import Qt, QSize, QTimer, pyqtSignal, QObject
+from PyQt5.QtCore import Qt, QSize, QTimer, pyqtSignal, QObject, QMetaObject, Q_ARG, QThread, pyqtSlot
 from PyQt5.QtGui import QIcon, QStandardItemModel, QStandardItem
 
 class WorkerSignals(QObject):
@@ -28,6 +32,12 @@ class WorkerSignals(QObject):
     status = pyqtSignal(str)
 
 class MainWindow(QMainWindow):
+    # Add these signals at the class level
+    update_progress_signal = pyqtSignal(int)
+    update_status_signal = pyqtSignal(str)
+    show_error_signal = pyqtSignal(str)
+    show_completion_dialog = pyqtSignal(tuple)
+    
     def __init__(self):
         super().__init__()
         self.init_ui()
@@ -37,6 +47,12 @@ class MainWindow(QMainWindow):
         self.doc_classifier = None
         self.thread_pool = ThreadPoolExecutor(max_workers=1)
         self.setup_classifiers()
+        
+        # Connect signals to slots using Qt.QueuedConnection
+        self.update_progress_signal.connect(self.update_progress_bar, Qt.QueuedConnection)
+        self.update_status_signal.connect(self._update_status, Qt.QueuedConnection)
+        self.show_error_signal.connect(self._show_error, Qt.QueuedConnection)
+        self.show_completion_dialog.connect(self._show_completion_dialog, Qt.QueuedConnection)
 
     def setup_classifiers(self):
         """Initialize the classifiers"""
@@ -291,6 +307,7 @@ class MainWindow(QMainWindow):
         self.clear_button.clicked.connect(self.clear_files)
         self.image_mode.toggled.connect(self.mode_changed)
         self.search_bar.textChanged.connect(self.filter_files)
+        self.groups_slider.valueChanged.connect(self.update_groups_value)
 
     def update_groups_value(self, value):
         """Update the groups value label"""
@@ -323,14 +340,8 @@ class MainWindow(QMainWindow):
         """Handle mode change between image and document"""
         if self.image_mode.isChecked():
             self.status_bar.showMessage('Switched to Image Mode')
-            self.groups_slider.setEnabled(True)
-            self.groups_label.setEnabled(True)
-            self.groups_value_label.setEnabled(True)
         else:
             self.status_bar.showMessage('Switched to Document Mode')
-            self.groups_slider.setEnabled(False)
-            self.groups_label.setEnabled(False)
-            self.groups_value_label.setEnabled(False)
         self.clear_files()
 
     def populate_tree(self):
@@ -423,27 +434,6 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            # Create signals
-            signals = WorkerSignals()
-            signals.progress.connect(lambda v: self.progress_bar.setValue(v))
-            signals.status.connect(lambda msg: self.operation_label.setText(msg))
-            signals.finished.connect(self.on_organization_complete)
-            signals.error.connect(lambda msg: QMessageBox.critical(self, "Error", msg))
-
-            # Move the GUI updates to the main thread
-            self.progress_bar.setVisible(True)
-            self.add_button.setEnabled(False)
-            self.organize_button.setEnabled(False)
-
-            # Start the worker thread
-            self.thread_pool.submit(self._organize_images_worker, signals)
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error organizing files: {str(e)}")
-
-    def _organize_images_worker(self, signals):
-        """Worker function for image organization"""
-        try:
             # Collect image paths
             image_paths = []
             for row in range(self.file_model.rowCount()):
@@ -452,118 +442,65 @@ class MainWindow(QMainWindow):
                     image_paths.append(file_path)
 
             if not image_paths:
-                signals.error.emit("No valid image files found.")
+                QMessageBox.warning(self, "No Images", "No valid image files found.")
                 return
 
-            signals.status.emit('Analyzing images with AI...')
-            
-            # Process images
-            results = self.classifier.analyze_images(image_paths)
-            num_groups = self.groups_slider.value()
-            grouped_images = self.classifier.group_images(results, num_groups=num_groups)
+            # Store paths as instance variable
+            self.image_paths = image_paths
 
-            if grouped_images:
-                # Create organized folders and move files
-                base_dir = os.path.dirname(image_paths[0])
-                organized_dir = os.path.join(base_dir, 'AI_Organized_Images')
-                os.makedirs(organized_dir, exist_ok=True)
-
-                for group_id, files in grouped_images.items():
-                    group_description = self.classifier.get_group_description(files)
-                    group_name = f"Group_{group_id}_{group_description}"
-                    group_dir = os.path.join(organized_dir, group_name)
-                    os.makedirs(group_dir, exist_ok=True)
-
-                    for file_path in files:
-                        new_path = os.path.join(group_dir, os.path.basename(file_path))
-                        shutil.copy2(file_path, new_path)
-
-                # Store the results for the completion handler
-                self._last_organized_dir = organized_dir
-                self._last_organization_stats = (len(image_paths), len(grouped_images))
-                
-                signals.finished.emit()
-            else:
-                signals.error.emit("Could not group the images.")
-
-        except Exception as e:
-            signals.error.emit(f"Error organizing files: {str(e)}")
-
-    def on_organization_complete(self):
-        """Handle completion of organization"""
-        organized_dir = getattr(self, '_last_organized_dir', '')
-        stats = getattr(self, '_last_organization_stats', (0, 0))
-        
-        msg = (f"Successfully organized {stats[0]} images into {stats[1]} groups.\n\n"
-               f"Location: {organized_dir}\n\n"
-               "Would you like to open the folder?")
-        
-        reply = QMessageBox.question(self, 'Organization Complete', msg,
-                                   QMessageBox.Yes | QMessageBox.No)
-        
-        if reply == QMessageBox.Yes:
-            if os.name == 'nt':
-                os.startfile(organized_dir)
-            else:
-                import subprocess
-                subprocess.call(['open', organized_dir])
-
-        self.clear_files()
-        self.progress_bar.setVisible(False)
-        self.add_button.setEnabled(True)
-        self.organize_button.setEnabled(True)
-        self.operation_label.setText('')
-
-    def organize_documents(self):
-        """Organize documents using AI classification"""
-        if self.file_model.rowCount() == 0:
-            QMessageBox.warning(self, "No Files", "Please add some documents first.")
-            return
-
-        try:
-            # Collect all document paths from the model
-            doc_paths = []
-            for row in range(self.file_model.rowCount()):
-                file_path = self.file_model.item(row).text()
-                if file_path.lower().endswith('.pdf'):
-                    doc_paths.append(file_path)
-                    print(f"Found document: {file_path}")
-
-            if not doc_paths:
-                QMessageBox.warning(self, "No Documents", "No valid PDF documents found.")
-                return
-
-            # Show progress
+            # Update GUI state
             self.progress_bar.setVisible(True)
-            self.progress_bar.setMaximum(len(doc_paths))
             self.progress_bar.setValue(0)
-            self.operation_label.setText('Analyzing documents with AI...')
             self.add_button.setEnabled(False)
             self.organize_button.setEnabled(False)
 
-            # Analyze documents
-            results = self.doc_classifier.analyze_documents(doc_paths)
+            # Create and setup worker thread
+            self.image_worker = ImageWorkerThread(
+                self.classifier, 
+                image_paths, 
+                self.groups_slider.value()
+            )
             
-            # Group documents
-            grouped_docs = self.doc_classifier.group_documents(results)
+            # Connect signals using Qt.QueuedConnection
+            self.image_worker.progress.connect(self.update_progress_bar, Qt.QueuedConnection)
+            self.image_worker.status.connect(self._update_status, Qt.QueuedConnection)
+            self.image_worker.error.connect(self._show_error, Qt.QueuedConnection)
+            self.image_worker.results_ready.connect(self.process_image_results, Qt.QueuedConnection)
+            self.image_worker.finished.connect(self.on_organization_complete, Qt.QueuedConnection)
+            
+            # Start the thread
+            self.image_worker.start()
 
-            if grouped_docs:
-                # Create output directory
-                base_dir = os.path.dirname(doc_paths[0])
-                organized_dir = os.path.join(base_dir, 'AI_Organized_Documents')
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error organizing files: {str(e)}")
+
+    def process_image_results(self, data):
+        """Process image results in the main thread"""
+        try:
+            results, grouped_images = data
+            if grouped_images:
+                base_dir = os.path.dirname(self.image_paths[0])
+                organized_dir = os.path.join(base_dir, 'AI_Organized_Images')
                 os.makedirs(organized_dir, exist_ok=True)
 
-                # Move documents to their respective groups
-                for category, files in grouped_docs.items():
-                    category_dir = os.path.join(organized_dir, category)
-                    os.makedirs(category_dir, exist_ok=True)
+                import shutil
+                total_files = 0
+
+                for group_name, files in grouped_images.items():
+                    group_dir = os.path.join(organized_dir, group_name)
+                    os.makedirs(group_dir, exist_ok=True)
+                    total_files += len(files)
 
                     for file_path in files:
-                        new_path = os.path.join(category_dir, os.path.basename(file_path))
-                        shutil.copy2(file_path, new_path)
+                        try:
+                            if os.path.exists(file_path):
+                                dest_path = os.path.join(group_dir, os.path.basename(file_path))
+                                shutil.copy2(file_path, dest_path)
+                        except Exception as e:
+                            logging.error(f"Error copying file {file_path}: {str(e)}")
 
-                # Show success message
-                msg = (f"Successfully organized {len(doc_paths)} documents into {len(grouped_docs)} categories.\n\n"
+                # Show completion dialog
+                msg = (f"Successfully organized {total_files} images into {len(grouped_images)} categories.\n\n"
                       f"Location: {organized_dir}\n\n"
                       "Would you like to open the folder?")
                 
@@ -573,27 +510,161 @@ class MainWindow(QMainWindow):
                 if reply == QMessageBox.Yes:
                     if os.name == 'nt':  # Windows
                         os.startfile(organized_dir)
-                    else:  # macOS or Linux
+                    else:  # macOS and Linux
                         import subprocess
-                        subprocess.call(['open', organized_dir])
+                        subprocess.run(['xdg-open' if os.name == 'posix' else 'open', organized_dir])
 
-                # Clear the file list
+                # Reset GUI state
                 self.clear_files()
+                self.progress_bar.setVisible(False)
+                self.add_button.setEnabled(True)
+                self.organize_button.setEnabled(True)
+                self.operation_label.setText('')
 
             else:
-                QMessageBox.warning(self, "Error", "Could not group the documents.")
+                self.show_error_signal.emit("Could not group the images.")
 
         except Exception as e:
-            import traceback
-            print(f"\nError occurred: {str(e)}")
-            print(traceback.format_exc())
-            QMessageBox.critical(self, "Error", f"Error organizing documents: {str(e)}")
+            self.show_error_signal.emit(f"Error organizing images: {str(e)}")
 
-        finally:
+    @pyqtSlot()
+    def on_organization_complete(self):
+        """Handle completion of organization"""
+        try:
+            # Reset GUI state
             self.progress_bar.setVisible(False)
+            self.add_button.setEnabled(True)
+            self.organize_button.setEnabled(True)
+            self.operation_label.setText('')
+            
+        except Exception as e:
+            logging.error(f"Error in completion handler: {str(e)}")
+            self.show_error_signal.emit(f"Error in completion handler: {str(e)}")
+
+    @pyqtSlot(int)
+    def update_progress_bar(self, value):
+        """Update progress bar from any thread"""
+        if self.progress_bar:
+            self.progress_bar.setValue(value)
+
+    @pyqtSlot(str)
+    def _update_status(self, message):
+        """Update status label from any thread"""
+        if self.operation_label:
+            self.operation_label.setText(message)
+
+    @pyqtSlot(str)
+    def _show_error(self, message):
+        """Show error message from any thread"""
+        QMessageBox.critical(self, "Error", message)
+
+    def organize_documents(self):
+        """Organize documents using AI classification"""
+        if self.file_model.rowCount() == 0:
+            QMessageBox.warning(self, "No Files", "Please add some documents first.")
+            return
+
+        try:
+            # Collect document paths
+            doc_paths = []
+            for row in range(self.file_model.rowCount()):
+                file_path = self.file_model.item(row).text()
+                if file_path.lower().endswith('.pdf'):
+                    doc_paths.append(file_path)
+
+            if not doc_paths:
+                QMessageBox.warning(self, "No Documents", "No valid PDF documents found.")
+                return
+
+            # Store paths as instance variable
+            self.doc_paths = doc_paths
+
+            # Update GUI state
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
             self.add_button.setEnabled(False)
             self.organize_button.setEnabled(False)
-            self.operation_label.setText('')
+
+            # Create and setup worker thread
+            self.doc_worker = DocumentWorkerThread(
+                self.doc_classifier, 
+                doc_paths, 
+                self.groups_slider.value()
+            )
+            
+            # Connect signals using Qt.QueuedConnection
+            self.doc_worker.progress.connect(self.update_progress_bar, Qt.QueuedConnection)
+            self.doc_worker.status.connect(self._update_status, Qt.QueuedConnection)
+            self.doc_worker.error.connect(self._show_error, Qt.QueuedConnection)
+            self.doc_worker.results_ready.connect(self.process_document_results, Qt.QueuedConnection)
+            self.doc_worker.finished.connect(self.on_organization_complete, Qt.QueuedConnection)
+            
+            # Start the thread
+            self.doc_worker.start()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error organizing documents: {str(e)}")
+
+    @pyqtSlot(tuple)
+    def process_document_results(self, data):
+        """Process document results in the main thread"""
+        try:
+            results, grouped_docs = data
+            if grouped_docs:
+                base_dir = os.path.dirname(self.doc_paths[0])
+                organized_dir = os.path.join(base_dir, 'AI_Organized_Documents')
+                os.makedirs(organized_dir, exist_ok=True)
+
+                total_files = 0
+                for group_name, files in grouped_docs.items():
+                    safe_group_name = group_name.replace('/', '_').replace('\\', '_')
+                    group_dir = os.path.join(organized_dir, safe_group_name)
+                    os.makedirs(group_dir, exist_ok=True)
+                    total_files += len(files)
+
+                    for file_path in files:
+                        try:
+                            if os.path.exists(file_path):
+                                dest_path = os.path.join(group_dir, os.path.basename(file_path))
+                                shutil.copy2(file_path, dest_path)
+                        except Exception as e:
+                            logging.error(f"Error copying file {file_path}: {str(e)}")
+
+                # Show completion dialog
+                msg = (f"Successfully organized {total_files} documents into {len(grouped_docs)} categories.\n\n"
+                      f"Location: {organized_dir}\n\n"
+                      "Would you like to open the folder?")
+                
+                # Use signal to show dialog in main thread
+                self.show_completion_dialog.emit((organized_dir, msg))
+
+            else:
+                self.show_error_signal.emit("Could not group the documents.")
+
+        except Exception as e:
+            logging.error(f"Error in process_document_results: {str(e)}")
+            self.show_error_signal.emit(f"Error organizing documents: {str(e)}")
+
+    @pyqtSlot(tuple)
+    def _show_completion_dialog(self, data):
+        """Show completion dialog in the main thread"""
+        organized_dir, msg = data
+        reply = QMessageBox.question(self, 'Organization Complete', msg,
+                                   QMessageBox.Yes | QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            if os.name == 'nt':  # Windows
+                os.startfile(organized_dir)
+            else:  # macOS and Linux
+                import subprocess
+                subprocess.run(['xdg-open' if os.name == 'posix' else 'open', organized_dir])
+
+        # Reset GUI state
+        self.clear_files()
+        self.progress_bar.setVisible(False)
+        self.add_button.setEnabled(True)
+        self.organize_button.setEnabled(True)
+        self.operation_label.setText('')
 
     def folder_selected(self, index):
         """Handle folder selection"""
@@ -609,3 +680,132 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.operation_label.clear()
         self.status_bar.showMessage('File list cleared')
+
+    def closeEvent(self, event):
+        """Clean up when closing the window"""
+        if hasattr(self, 'image_worker'):
+            self.image_worker.stop()
+            self.image_worker.wait()
+        if hasattr(self, 'doc_worker'):
+            self.doc_worker.stop()
+            self.doc_worker.wait()
+        event.accept()
+
+    def process_document(self, text):
+        # Direct call without threading
+        try:
+            results = self.doc_classifier.process_document(text)
+            self.update_results(results)  # Direct update of UI
+        except Exception as e:
+            print(f"Error processing document: {str(e)}")
+    
+    def update_results(self, results):
+        # Update your UI directly here
+        self.status_bar.showMessage(f"Results updated: {len(results)} documents processed")
+        self.file_model.clear()
+        for result in results:
+            item = QStandardItem(result['filename'])
+            item.setData(result['path'], Qt.UserRole)
+            self.file_model.appendRow(item)
+        self.file_counter_label.setText(f'Files: {len(results)}')
+
+class DocumentWorkerThread(QThread):
+    progress = pyqtSignal(int)
+    status = pyqtSignal(str)
+    error = pyqtSignal(str)
+    results_ready = pyqtSignal(tuple)
+
+    def __init__(self, classifier, doc_paths, num_groups):
+        super().__init__()
+        self.classifier = classifier
+        self.doc_paths = doc_paths
+        self.num_groups = num_groups
+        self._is_running = True
+
+    def run(self):
+        try:
+            self.status.emit("Analyzing documents...")
+            total_docs = len(self.doc_paths)
+            
+            if total_docs == 0:
+                self.error.emit("No documents to process.")
+                return
+            
+            # Analyze all documents first
+            results = self.classifier.analyze_documents(self.doc_paths)
+            if not results:
+                self.error.emit("Could not analyze documents.")
+                return
+
+            self.progress.emit(50)
+            
+            # Use the document classifier's grouping function with themes
+            grouped_docs = self.classifier.group_documents(
+                results, 
+                confidence_threshold=0.5,
+                num_groups=self.num_groups
+            )
+            
+            if not grouped_docs:
+                self.error.emit("Could not group the documents.")
+                return
+                
+            self.progress.emit(90)
+            self.results_ready.emit((results, grouped_docs))
+            self.progress.emit(100)
+            
+        except Exception as e:
+            logging.error(f"Error in document classification: {str(e)}")
+            self.error.emit(f"Error in document classification: {str(e)}")
+        finally:
+            if self._is_running:
+                self.finished.emit()
+
+    def stop(self):
+        self._is_running = False
+
+class ImageWorkerThread(QThread):
+    progress = pyqtSignal(int)
+    status = pyqtSignal(str)
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+    results_ready = pyqtSignal(tuple)  # Changed from object to tuple
+
+    def __init__(self, classifier, image_paths, num_groups):
+        super().__init__()
+        self.classifier = classifier
+        self.image_paths = image_paths
+        self.num_groups = num_groups
+        self._is_running = True
+
+    def run(self):
+        try:
+            self.status.emit('Analyzing images with AI...')
+            self.progress.emit(10)
+            
+            results = self.classifier.analyze_images(self.image_paths)
+            if not results or not self._is_running:
+                self.error.emit("Could not analyze images.")
+                return
+                
+            self.progress.emit(50)
+            self.status.emit('Grouping images...')
+            
+            grouped_images = self.classifier.group_images(results, num_groups=self.num_groups)
+            if not grouped_images or not self._is_running:
+                self.error.emit("Could not group the images.")
+                return
+                
+            self.progress.emit(90)
+            self.results_ready.emit((results, grouped_images))
+            self.progress.emit(100)
+            
+        except Exception as e:
+            logging.error(f"Error in image worker thread: {str(e)}")
+            self.error.emit(f"Error organizing files: {str(e)}")
+        finally:
+            if self._is_running:
+                self.finished.emit()
+
+    def stop(self):
+        self._is_running = False

@@ -165,30 +165,101 @@ class DocumentClassifier:
         return results
 
     def group_documents(self, analysis_results: List[Dict[str, Any]], 
-                       confidence_threshold: float = 0.5) -> Dict[str, List[str]]:
+                       confidence_threshold: float = 0.5,
+                       num_groups: int = None) -> Dict[str, List[str]]:
         """Group documents based on their hierarchical classifications"""
         try:
-            grouped_docs = {}
-            
+            # First, collect all documents with their categories
+            doc_categories = {}
             for result in analysis_results:
                 if result['categories'] and result['confidence']:
-                    # Use the highest confidence category level
-                    max_conf_idx = max(range(len(result['confidence'])), 
-                                    key=lambda i: result['confidence'][i])
+                    # Create a category key based on all levels
+                    category_key = ' → '.join(result['categories'])
+                    if category_key not in doc_categories:
+                        doc_categories[category_key] = []
+                    doc_categories[category_key].append(result['path'])
+
+            # If we have fewer unique categories than requested groups, use what we have
+            if num_groups is not None:
+                # Sort categories by number of documents
+                sorted_categories = sorted(doc_categories.items(), 
+                                        key=lambda x: len(x[1]), 
+                                        reverse=True)
+                
+                # Take exactly num_groups categories or all if we have fewer
+                actual_groups = min(num_groups, len(sorted_categories))
+                
+                # Take the top N categories based on document count
+                grouped_docs = {}
+                for i in range(actual_groups):
+                    cat_name, files = sorted_categories[i]
+                    grouped_docs[cat_name] = files
+                
+                # If there are any remaining categories, merge them into "Others"
+                if len(sorted_categories) > actual_groups:
+                    others_files = []
+                    for cat_name, files in sorted_categories[actual_groups:]:
+                        others_files.extend(files)
                     
-                    if result['confidence'][max_conf_idx] >= confidence_threshold:
-                        category_path = ' → '.join(result['categories'][:max_conf_idx + 1])
+                    if others_files:
+                        grouped_docs["Others"] = others_files
                         
-                        if category_path not in grouped_docs:
-                            grouped_docs[category_path] = []
-                            
-                        grouped_docs[category_path].append(result['path'])
-            
-            return grouped_docs
-            
+                return grouped_docs
+                
+            return doc_categories
+                
         except Exception as e:
             logging.error(f"Error grouping documents: {str(e)}")
             return {}
+
+    def extract_features(self, doc_path: str):
+        """Extract features from a document"""
+        try:
+            # Extract text from the document
+            text = self.extract_text_from_pdf(doc_path)
+            if not text:
+                return None
+                
+            # Tokenize text
+            encoding = self.tokenizer(
+                text,
+                add_special_tokens=True,
+                max_length=512,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            
+            # Get BERT embeddings
+            with torch.no_grad():
+                outputs = self.model.bert(
+                    input_ids=encoding['input_ids'].to(self.device),
+                    attention_mask=encoding['attention_mask'].to(self.device)
+                )
+                
+            # Use the [CLS] token embedding as document features
+            features = outputs.last_hidden_state[:, 0].cpu().numpy()
+            return features.squeeze()
+            
+        except Exception as e:
+            logging.error(f"Error extracting features from {doc_path}: {str(e)}")
+            return None
+
+    def process_document(self, text: str) -> Dict[str, Any]:
+        """Process a single document text"""
+        try:
+            predictions, confidence_scores = self.classify_document(text)
+            if predictions and confidence_scores:
+                return {
+                    'categories': predictions,
+                    'confidence': confidence_scores,
+                    'type': 'document'
+                }
+            return None
+        except Exception as e:
+            logging.error(f"Error processing document: {str(e)}")
+            return None
 
 class WorkerThread(QThread):
     finished = pyqtSignal(object)
